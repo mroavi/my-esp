@@ -1,3 +1,12 @@
+/*
+ * Uses the NEC Infrared Transmission Protocol to receive IR codes:
+ * 	http://techdocs.altium.com/display/FPGA/NEC+Infrared+Transmission+Protocol
+ *
+ *
+ *
+ */
+
+
 #include <esp8266.h>
 #include <config.h>
 
@@ -72,7 +81,7 @@ typedef enum {
 } FRC1_TIMER_SOURCE_TYPE;
 
 
-static uint32 	intervalArr[30] = {0};
+static uint32 	intervalArr[70] = {0};
 static uint32	edgeIndex = 0;
 
 /* initialize to a very big number */
@@ -103,7 +112,7 @@ static uint32 ticksToUs( uint32_t ticks )
 void hwTimerCallback( void )
 {
 	int i, j;
-	int state = 0;
+	int state = 1;
 	int stateLen = 0;
 
 	/* stop the HW TIMER */
@@ -113,7 +122,7 @@ void hwTimerCallback( void )
 	gpio_output_set(0, BIT0, BIT0, 0);
 
 	/* load the HW TIMER for next IR code */
-	uint32 ticks = usToTicks(30000);
+	uint32 ticks = usToTicks(70000);
 	RTC_REG_WRITE(FRC1_LOAD_ADDRESS, ticks);
 
 	/* derive the IR code */
@@ -163,10 +172,10 @@ void gpioCallback(void *arg)
 	/* clear the interrupt */
 	GPIO_REG_WRITE( GPIO_STATUS_W1TC_ADDRESS, gpio_status);
 
-	/* check which GPIO caused the ISR */
+	/* did GPIO 12 (connected to IR receiver) generate the ISR? */
 	if( gpio_status == BIT(12) )
 	{
-		/* first edge of the RF code? */
+		/* yes, and is it the first edge of the IR code? */
 		if ( edgeIndex == 0 )
 		{
 			/* yes, then store counter value */
@@ -180,7 +189,7 @@ void gpioCallback(void *arg)
 			minInterval = 0xFFFFFFFF;
 			irCodeLen = 0;
 
-			os_printf("\n\nBeginning of RF code detected");
+			os_printf("\n\nBeginning of IR code detected");
 
 			//Set GPIO0 to HIGH
 			gpio_output_set( BIT0, 0, BIT0, 0 );
@@ -350,7 +359,7 @@ void app_init()
 	/* ====================================== */
 
 	/* load the HW TIMER */
-	uint32 ticks = usToTicks(30000);
+	uint32 ticks = usToTicks(70000);
 	RTC_REG_WRITE(FRC1_LOAD_ADDRESS, ticks);
 
 	/* register callback function */
