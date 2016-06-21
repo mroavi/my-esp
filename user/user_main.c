@@ -1,4 +1,6 @@
-/*
+/* ===========================================================================
+ * my-esp features
+ * ===========================================================================
  * Uses the NEC Infrared Transmission Protocol to receive IR codes:
  * 	http://techdocs.altium.com/display/FPGA/NEC+Infrared+Transmission+Protocol
  *
