@@ -46,7 +46,7 @@ STA_PASS ?= tonytony
 CHANGE_TO_STA ?= yes
 
 # hostname or IP address for wifi flashing
-ESP_HOSTNAME        ?= esp-link
+ESP_HOSTNAME        ?= my-esp
 
 # --------------- toolchain configuration ---------------
 
@@ -79,7 +79,7 @@ BOOTFILE	?= $(SDK_BASE/bin/boot_v1.5.bin)
 # Typically you'll use https://github.com/themadinventor/esptool
 # Windows users use the com port i.e: ESPPORT ?= com3
 ESPTOOL		?= esptool.py
-ESPPORT		?= /dev/ttyUSB1
+ESPPORT		?= /dev/ttyUSB2
 ESPBAUD		?= 460800
 
 # --------------- chipset configuration   ---------------

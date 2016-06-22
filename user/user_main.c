@@ -67,7 +67,7 @@ void some_timerfunc(void *arg)
 
 //TIMER PREDIVED MODE
 typedef enum {
-    DIVDED_BY_1 = 0,		//timer clock
+    DIVDED_BY_1 = 0,	//timer clock
     DIVDED_BY_16 = 4,	//divided by 16
     DIVDED_BY_256 = 8,	//divided by 256
 } TIMER_PREDIVED_MODE;
@@ -89,10 +89,12 @@ static uint32	edgeIndex = 0;
 /* initialize to a very big number */
 static uint32	minInterval = 0xFFFFFFFF;
 
-/* this array will contain the final IR code */
-static uint32 irCode[100] = {0};
-static uint32 irCodeLen = 0;
+/* this array will contain the raw IR message */
+static uint32 	rawIrMsg[100] = {0};
+static uint32 	rawIrMsgLen = 0;
 
+/* this variable will contain the decoded IR command */
+static uint32 	irCmd = 0;
 
 /* assumes timer clk of 5MHz */
 static uint32 usToTicks( uint32_t us )
@@ -116,6 +118,7 @@ void hwTimerCallback( void )
 	int i, j;
 	int logicState = 1;
 	int logicStateLen = 0;
+	bool repeatCode = false;
 
 	/* stop the HW TIMER */
 	RTC_REG_WRITE(FRC1_CTRL_ADDRESS, DIVDED_BY_16 | TM_EDGE_INT);
@@ -123,11 +126,11 @@ void hwTimerCallback( void )
 	//Set GPIO0 to LOW
 	gpio_output_set(0, BIT0, BIT0, 0);
 
-	/* load the HW TIMER for next IR code */
+	/* load the HW TIMER for next IR message frame */
 	uint32 ticks = usToTicks(70000);
 	RTC_REG_WRITE(FRC1_LOAD_ADDRESS, ticks);
 
-	/* derive the IR code */
+	/* derive the raw IR message frame */
 	for( i = 0 ; i < ( edgeIndex - 1 ) ; i++)
 	{
 		/* find number of bits in current interval */
@@ -135,27 +138,107 @@ void hwTimerCallback( void )
 
 		for( j = 0 ; j < logicStateLen ; j++)
 		{
-			irCode[ irCodeLen ] = logicState;
-			irCodeLen++;
+			rawIrMsg[ rawIrMsgLen ] = logicState;
+			rawIrMsgLen++;
 		}
 
 		/* toggle state */
 		logicState ^= 1;
 
-//		os_printf( "\r\nDuration of interval %d: %d us\r\n", i, intervalArr[i] );
+#if 0
+		os_printf( "\r\nDuration of interval %d: %d us\r\n", i, intervalArr[i] );
+#endif
 	}
 
-	/* print the received IR code */
-	os_printf( "\r\nIR CODE: ");
-	for ( i = 0 ; i < irCodeLen ; i++ )
+#if 1
+	/* print the received raw IR message frame */
+	os_printf( "\r\nRAW IR CODE: ");
+	for ( i = 0 ; i < rawIrMsgLen ; i++ )
 	{
-		os_printf( "%d", irCode[i] );
+		os_printf( "%d", rawIrMsg[i] );
 	}
+#endif
+
+	/**********************************************
+	 * DECODE NEC MESSAGE FRAME!
+	 * - every message frame contains 32 coded bits
+	 **********************************************/
+
+	/* set index to the beginning of the coded bits */
+
+	/* the message frame starts with a burst of 16 logic 1's, skip them all */
+	i = 0 ;
+	while ( rawIrMsg[i] == 1 ) i++;
+
+	/* the message frame continues with a burst of 8 logic 0's, skip them all */
+	j = 0;
+	while (rawIrMsg[i] == 0)
+	{
+		i++;
+		j++;
+	}
+
+	/* if the number of zeros is 4, then ignore the current message frame since
+	 * it corresponds to a "REPEATED CODE".
+	 */
+	if ( j <= 4 )
+	{
+#if 1
+		os_printf( "\r\nREPEATED CODE");
+#endif
+		repeatCode = true;
+	}
+
+	/* decode raw message only if it is not a repeat code */
+	if (repeatCode == false)
+	{
+		/* at this point 'i' contains the index of the beginning of the encoded bits */
+
+		/* decode raw message
+		 * - [1][0][0][0] 	represents a '1'
+		 * - [1][0]			represents a '0'
+		 */
+		irCmd = 0;
+		for (j = 0; j < 32; j++)
+		{
+			if (rawIrMsg[i + 2] == 0)
+			{
+				/* it is a '1', so left shift a '1' */
+				irCmd = (irCmd << 1) | 1;
+
+				/* move to the beginning of the next encoded bit
+				 * (increment i until next 1 in raw message frame)
+				 */
+				do {i++;} while ( rawIrMsg[i] == 0 );
+			}
+			else {
+				/* it is a '0', so left shift a '0' */
+				irCmd = irCmd << 1;
+
+				/* move to the beginning of the next encoded bit */
+				i += 2;
+			}
+		}
+
+#if 1
+		/* print the received IR cmd */
+		os_printf("\r\nIR CMD: %x", irCmd);
+#endif
+	}
+
+	/**********************************************
+	 * END - DECODE NEC MESSAGE FRAME!
+	 * - every message frame contains 32 coded bits
+	 **********************************************/
 
 	/* reset index */
 	edgeIndex = 0;
 
-	os_printf("\r\nEnd of RF code\r\n");
+#if 1
+	os_printf("\r\nEnd of IR message frame\r\n");
+#endif
+
+	return;
 }
 
 /* ====================================== */
@@ -177,7 +260,7 @@ void gpioCallback(void *arg)
 	/* did GPIO 12 (connected to IR receiver) generate the ISR? */
 	if( gpio_status == BIT(12) )
 	{
-		/* yes, and is it the first edge of the IR code? */
+		/* yes, and is it the first edge of the IR message frame? */
 		if ( edgeIndex == 0 )
 		{
 			/* yes, then store counter value */
@@ -188,10 +271,12 @@ void gpioCallback(void *arg)
 					DIVDED_BY_16 | FRC1_ENABLE_TIMER | TM_EDGE_INT);
 
 			/* reset relevant variables */
-			minInterval = 0xFFFFFFFF;
-			irCodeLen = 0;
+			minInterval = 0xFFFFFFFF; // initialize to a very big number
+			rawIrMsgLen = 0;
 
-			os_printf("\n\nBeginning of IR code detected");
+#if 1
+			os_printf("\n\nBeginning of IR message frame detected");
+#endif
 
 			//Set GPIO0 to HIGH
 			gpio_output_set( BIT0, 0, BIT0, 0 );
@@ -360,8 +445,18 @@ void app_init()
 	/* HARDWARE TIMER                         */
 	/* ====================================== */
 
+	/* The hardware timer is used to indicate when a complete IR message frame should have
+	 * arrived in order to process the received data and calculate the IR code.
+	 *
+	 * It is configured in "one-shot" mode. It is started when the beginning of an
+	 * IR message frame is detected and stopped after the complete message frame has been read.
+	 * This means that the duration of the HW timer should be longer than the duration of
+	 * the longest message frame. In the NEC IR tranmission protocol all message frames have
+	 * a duration of approximately 67.5ms.
+	 */
+
 	/* load the HW TIMER */
-	uint32 ticks = usToTicks(70000);
+	uint32 ticks = usToTicks(70000); // 70ms
 	RTC_REG_WRITE(FRC1_LOAD_ADDRESS, ticks);
 
 	/* register callback function */
@@ -419,8 +514,11 @@ void app_init()
 
 	wifi_station_get_config_default(&stconf);
 
-	os_strncpy((char*) stconf.ssid, "TP-LINK_2.4GHz_FC2E51", 32);
-	os_strncpy((char*) stconf.password, "tonytony", 64);
+//	os_strncpy((char*) stconf.ssid, "TP-LINK_2.4GHz_FC2E51", 32);
+//	os_strncpy((char*) stconf.password, "tonytony", 64);
+
+	os_strncpy((char*) stconf.ssid, "WLAN-PUB", 32);
+	os_strncpy((char*) stconf.password, "", 64);
 
 	stconf.bssid_set = 0;
 	wifi_station_set_config(&stconf);
