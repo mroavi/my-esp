@@ -115,7 +115,7 @@ void hwTimerCallback( void )
 {
 	int i, j;
 	int logicState = 1;
-	int stateLen = 0;
+	int logicStateLen = 0;
 
 	/* stop the HW TIMER */
 	RTC_REG_WRITE(FRC1_CTRL_ADDRESS, DIVDED_BY_16 | TM_EDGE_INT);
@@ -131,9 +131,9 @@ void hwTimerCallback( void )
 	for( i = 0 ; i < ( edgeIndex - 1 ) ; i++)
 	{
 		/* find number of bits in current interval */
-		stateLen = ( intervalArr[i] / minInterval );
+		logicStateLen = ( intervalArr[i] / minInterval );
 
-		for( j = 0 ; j < stateLen ; j++)
+		for( j = 0 ; j < logicStateLen ; j++)
 		{
 			irCode[ irCodeLen ] = logicState;
 			irCodeLen++;
