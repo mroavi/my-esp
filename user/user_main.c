@@ -446,7 +446,7 @@ void app_init()
 	/* ====================================== */
 
 	/* The hardware timer is used to indicate when a complete IR message frame should have
-	 * arrived in order to process the received data and calculate the IR code.
+	 * arrived in order to process the received data and calculate the IR command.
 	 *
 	 * It is configured in "one-shot" mode. It is started when the beginning of an
 	 * IR message frame is detected and stopped after the complete message frame has been read.
@@ -517,8 +517,12 @@ void app_init()
 //	os_strncpy((char*) stconf.ssid, "TP-LINK_2.4GHz_FC2E51", 32);
 //	os_strncpy((char*) stconf.password, "tonytony", 64);
 
-	os_strncpy((char*) stconf.ssid, "WLAN-PUB", 32);
-	os_strncpy((char*) stconf.password, "", 64);
+//	os_strncpy((char*) stconf.ssid, "WLAN-PUB", 32);
+//	os_strncpy((char*) stconf.password, "", 64);
+
+	os_strncpy((char*) stconf.ssid, "MAD air", 32);
+	os_strncpy((char*) stconf.password, "glioninlog", 64);
+
 
 	stconf.bssid_set = 0;
 	wifi_station_set_config(&stconf);
