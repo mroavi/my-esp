@@ -114,7 +114,7 @@ static uint32 ticksToUs( uint32_t ticks )
 void hwTimerCallback( void )
 {
 	int i, j;
-	int state = 1;
+	int logicState = 1;
 	int stateLen = 0;
 
 	/* stop the HW TIMER */
@@ -135,12 +135,12 @@ void hwTimerCallback( void )
 
 		for( j = 0 ; j < stateLen ; j++)
 		{
-			irCode[ irCodeLen ] = state;
+			irCode[ irCodeLen ] = logicState;
 			irCodeLen++;
 		}
 
 		/* toggle state */
-		state ^= 1;
+		logicState ^= 1;
 
 //		os_printf( "\r\nDuration of interval %d: %d us\r\n", i, intervalArr[i] );
 	}
