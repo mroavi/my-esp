@@ -23,6 +23,7 @@
 #include "pwm.h"
 #include "espconn.h"
 #include "user_interface.h"
+#include "ws2812_i2s.h"
 
 
 
@@ -44,23 +45,130 @@ static struct espconn *pUdpServer;
 
 void some_timerfunc(void *arg)
 {
-    // Toggle PIN
-    if (GPIO_REG_READ(GPIO_OUT_ADDRESS) & RELAY_PIN)
-    {
-        //Set GPIO0 to LOW
-//        gpio_output_set(0, BIT0, BIT0, 0);
-    }
-    else
-    {
-        //Set GPIO0 to HIGH
-//        gpio_output_set(BIT0, 0, BIT0, 0);
-    }
-
     /* ====================================== */
 	/* ADC	                         	  	  */
 	/* ====================================== */
-	uint32 adc_value = system_adc_read();
-	os_printf("\r\nsystem_adc_read: %x", adc_value);
+
+    /* Current ADC value */
+	uint16 adc_value;
+
+	/* Previous ADC value */
+	static uint16 prev_adc_value;
+
+	/* The absolute value of the previous and current ADC values */
+	static uint16 diff_abs_val = 0;
+
+	/* color in RGB space */
+	rgb my_rgb;
+
+	/* color in HSV space */
+	hsv my_hsv;
+
+	/* TODO: make rainbow when no volume */
+	static int count = 0;
+
+	/* defines the number of ws2812 LEDs */
+	static int num_leds = 30;
+
+	/* Changes of volume below the threshold are ignored */
+	static int threshold = 20;
+
+	/* Controls the 'fading' effect */
+	static bool lock = false;
+
+	uint8_t led_out[num_leds * 3];
+
+	uint16 i;
+
+	/* Fading animation taking place? */
+	if ( lock == false )
+	{
+		/* No, then Read ADC */
+		adc_value = system_adc_read();
+
+		/* Calculate the absolute value of the previous and current ADC values */
+		diff_abs_val = ( adc_value > prev_adc_value ) ? adc_value - prev_adc_value : prev_adc_value - adc_value;
+
+		if ( diff_abs_val < threshold)
+		{
+			/* The change of volume was too low, do nothing*/
+		}
+		else
+		{
+			lock = true;
+		}
+
+	}
+	else
+	{
+		/* No, then continue with animation */
+	}
+
+
+
+	if ( lock )
+	{
+		/* 240°-> blue ; 120°-> green ; 0°-> red */
+		my_hsv.h = 240.0;
+		my_hsv.s = 1.0;
+		my_hsv.v = 0.1;
+
+		/* clip hue if below 0 */
+		my_hsv.h = my_hsv.h < 0 ? 0 : my_hsv.h;
+
+		/* Convert color from HSV to RGB space */
+		my_rgb = hsv2rgb(my_hsv);
+
+		/* Store RGB color of first LED in the output buffer */
+		led_out[i * 3 + 0] 	= (uint8)(my_rgb.g * 255);
+		led_out[i * 3 + 1] 	= (uint8)(my_rgb.r * 255);
+		led_out[i * 3 + 2] 	= (uint8)(my_rgb.b * 255);
+
+		/* Shift each color one LED to the right */
+		for (i = 1; i < num_leds; i++)
+		{
+			/* decrease hue depending on the change in volume */
+			my_hsv.h = (uint16)my_hsv.h - (uint16)(diff_abs_val * 0.2);
+
+			/* clip hue if below 0 */
+			my_hsv.h = my_hsv.h < 0 ? 0 : my_hsv.h;
+
+			/* Convert color from HSV to RGB space */
+			my_rgb = hsv2rgb(my_hsv);
+
+			/* Store RGB color in the output buffer */
+			led_out[i * 3 + 0] = my_rgb.g * 255;
+			led_out[i * 3 + 1] = my_rgb.r * 255;
+			led_out[i * 3 + 2] = my_rgb.b * 255;
+		}
+
+		ws2812_push(led_out, sizeof(led_out));
+
+	#if 0
+			os_printf("\r\nG R B: %x %x %x", led_out[0], led_out[1],led_out[2]);
+	//		os_printf("\r\nhue: %d", (int)my_hsv.h);
+	#endif
+
+
+		/* Save adc_value */
+		prev_adc_value = adc_value;
+
+
+	#if 1
+	//	os_printf("\r\nsystem_adc_read: %x", adc_value);
+	//	os_printf("\r\ndiff_abs_val: %x", diff_abs_val);
+	#endif
+
+		count++;
+		if( my_hsv.h > 360.0)
+		{
+			count = 0;
+		}
+
+		lock = false;
+	}
+
+	return;
 }
 
 /* ====================================== */
@@ -242,12 +350,6 @@ void hwTimerCallback( void )
 #if 1
 	os_printf("\r\nEnd of IR message frame\r\n");
 #endif
-
-	/* ====================================== */
-	/* ADC	                         	  	  */
-	/* ====================================== */
-	uint32 adc_value = system_adc_read();
-	os_printf("\r\nsystem_adc_read: %d", adc_value);
 
 	return;
 }
@@ -443,9 +545,9 @@ void user_init()
 
 	//Arm the timer
 	//&some_timer is the pointer
-	//1000 is the fire time in ms
+	//third parameter is the fire time in ms
 	//0 for once and 1 for repeating
-	os_timer_arm((ETSTimer*)&some_timer, 100, 1);
+	os_timer_arm((ETSTimer*)&some_timer, 10, 1);
 
 	//Start os task
 	system_os_task(user_procTask, user_procTaskPrio, user_procTaskQueue,
@@ -525,11 +627,11 @@ void user_init()
 
 	wifi_station_get_config_default(&stconf);
 
-//	os_strncpy((char*) stconf.ssid, "TP-LINK_2.4GHz_FC2E51", 32);
-//	os_strncpy((char*) stconf.password, "tonytony", 64);
+	os_strncpy((char*) stconf.ssid, "TP-LINK_2.4GHz_FC2E51", 32);
+	os_strncpy((char*) stconf.password, "tonytony", 64);
 
-	os_strncpy((char*) stconf.ssid, "WLAN-PUB", 32);
-	os_strncpy((char*) stconf.password, "", 64);
+//	os_strncpy((char*) stconf.ssid, "WLAN-PUB", 32);
+//	os_strncpy((char*) stconf.password, "", 64);
 
 //	os_strncpy((char*) stconf.ssid, "MAD air", 32);
 //	os_strncpy((char*) stconf.password, "glioninlog", 64);
@@ -537,6 +639,26 @@ void user_init()
 
 	stconf.bssid_set = 0;
 	wifi_station_set_config(&stconf);
+
+	/* ====================================== */
+	/* WS2812 LED STRIP                	  	  */
+	/* ====================================== */
+
+	ws2812_init();
+
+	/*						G		R		B			*/
+	uint8_t ledout[] = 	{
+							0xff,	0x00,	0x00, 		//4th
+//							0xff,	0x00,	0x00,		//3rd
+//							0x00,	0xff,	0x00,		//2nd
+//							0x00,	0x00,	0xff, 		//1st
+						};
+
+#if 0
+		os_printf("\r\nB R G: %x %x %x\r\n", ledout[0], ledout[1],ledout[2]);
+#endif
+
+	ws2812_push( ledout, sizeof( ledout ) );
 
 
 	return;

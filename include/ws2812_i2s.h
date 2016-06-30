@@ -29,8 +29,30 @@
 // timing for SK6812 LEDs, always uses 4bit samples
 //#define SK6812
 
-void ICACHE_FLASH_ATTR ws2812_init();
-void ws2812_push( uint8_t * buffer, uint16_t buffersize ); //Buffersize = Nr LEDs * 3
+void ICACHE_FLASH_ATTR 	ws2812_init();
+
+void 					ws2812_push( uint8_t * buffer, uint16_t buffersize ); //Buffersize = Nr LEDs * 3
+
+
+
+
+
+/* from: http://stackoverflow.com/questions/3018313/algorithm-to-convert-rgb-to-hsv-and-hsv-to-rgb-in-range-0-255-for-both */
+
+typedef struct {
+	double r;       // percent
+	double g;       // percent
+	double b;       // percent
+} rgb;
+
+typedef struct {
+	double h;       // angle in degrees
+	double s;       // percent
+	double v;       // percent
+} hsv;
+
+hsv rgb2hsv(rgb in);
+rgb hsv2rgb(hsv in);
 
 #endif
 
