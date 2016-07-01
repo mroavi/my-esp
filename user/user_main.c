@@ -55,8 +55,8 @@ void some_timerfunc(void *arg)
 	/* Previous ADC value */
 	static uint16 prev_adc_value;
 
-	/* The absolute value of the previous and current ADC values */
-	static uint16 diff_abs_val = 0;
+	/* The absolute value of the difference of the current and previous ADC values */
+	static uint16 abs_val_diff = 0;
 
 	/* Color in RGB space */
 	rgb my_rgb;
@@ -76,6 +76,9 @@ void some_timerfunc(void *arg)
 	/* Controls the 'fading' effect */
 	static bool lock = false;
 
+	/* Controls the heatmap of the LEDs */
+	static int heatmap = 0;
+
 	uint8_t led_out[num_leds * 3];
 
 	uint16 i;
@@ -84,19 +87,24 @@ void some_timerfunc(void *arg)
 	my_hsv.s = 1.0;
 	my_hsv.v = 0.1;
 
+	/* No, then Read ADC */
+	adc_value = system_adc_read();
+
+	/* Calculate the absolute value of the previous and current ADC values */
+	abs_val_diff = ( adc_value > prev_adc_value ) ? adc_value - prev_adc_value : prev_adc_value - adc_value;
+
+	/* Save adc_value */
+	prev_adc_value = adc_value;
+
 	/* Fading animation taking place? */
 	if ( lock == false )
 	{
-		/* No, then Read ADC */
-		adc_value = system_adc_read();
+		heatmap = abs_val_diff;
+#if 0
+		os_printf("\r\nheatmap: %d", heatmap);
+#endif
 
-		/* Calculate the absolute value of the previous and current ADC values */
-		diff_abs_val = ( adc_value > prev_adc_value ) ? adc_value - prev_adc_value : prev_adc_value - adc_value;
-
-		/* Save adc_value */
-		prev_adc_value = adc_value;
-
-		if ( diff_abs_val < threshold)
+		if ( abs_val_diff < threshold)
 		{
 			/* The change of volume was too low, do nothing*/
 		}
@@ -113,10 +121,38 @@ void some_timerfunc(void *arg)
 
 
 	uint16 red_up_num_cycles = 25;
+	static bool count_up = true;
 
 	if ( lock == true )
 	{
-		/* Set color for each LED except the first one */
+		if ( count_up == true )
+		{
+			/* heat up */
+			count += 2;
+
+			count_up = (count >= red_up_num_cycles) ? false : true ;
+		}
+		else
+		{
+			/* cool down */
+			count--;
+
+			if ( count == 1 )
+			{
+				/* Stop gradual color change */
+				lock = false;
+
+				count_up = true;
+
+				count = 0;
+			}
+		}
+
+#if 0
+		os_printf("\r\ncount: %d", count);
+#endif
+
+		/* Set color for each LED */
 		for (i = 0; i < num_leds; i++)
 		{
 			if ( i == 0 )
@@ -127,7 +163,7 @@ void some_timerfunc(void *arg)
 			else
 			{
 				/* decrease hue depending on the change in volume */
-				my_hsv.h = (uint16)my_hsv.h - (uint16)(diff_abs_val * 0.005 * (count + 1));
+				my_hsv.h = (uint16)my_hsv.h - (uint16)(heatmap * 0.005 * count);
 			}
 
 
@@ -154,19 +190,6 @@ void some_timerfunc(void *arg)
 	//	os_printf("\r\nsystem_adc_read: %x", adc_value);
 	//	os_printf("\r\ndiff_abs_val: %x", diff_abs_val);
 	#endif
-
-		count++;
-
-		if ( count >= red_up_num_cycles )
-		{
-			/* Release the lock */
-			lock = false;
-
-			/* Reset count*/
-			count = 0;
-		}
-
-
 	}
 
 	return;
