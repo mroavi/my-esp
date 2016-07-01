@@ -58,10 +58,10 @@ void some_timerfunc(void *arg)
 	/* The absolute value of the previous and current ADC values */
 	static uint16 diff_abs_val = 0;
 
-	/* color in RGB space */
+	/* Color in RGB space */
 	rgb my_rgb;
 
-	/* color in HSV space */
+	/* Color in HSV space */
 	hsv my_hsv;
 
 	/* TODO: make rainbow when no volume */
@@ -80,6 +80,10 @@ void some_timerfunc(void *arg)
 
 	uint16 i;
 
+	/* Init saturation and value for HSV color */
+	my_hsv.s = 1.0;
+	my_hsv.v = 0.1;
+
 	/* Fading animation taking place? */
 	if ( lock == false )
 	{
@@ -89,15 +93,18 @@ void some_timerfunc(void *arg)
 		/* Calculate the absolute value of the previous and current ADC values */
 		diff_abs_val = ( adc_value > prev_adc_value ) ? adc_value - prev_adc_value : prev_adc_value - adc_value;
 
+		/* Save adc_value */
+		prev_adc_value = adc_value;
+
 		if ( diff_abs_val < threshold)
 		{
 			/* The change of volume was too low, do nothing*/
 		}
 		else
 		{
+			/* Trigger detected! Start animation! */
 			lock = true;
 		}
-
 	}
 	else
 	{
@@ -105,30 +112,24 @@ void some_timerfunc(void *arg)
 	}
 
 
+	uint16 red_up_num_cycles = 25;
 
-	if ( lock )
+	if ( lock == true )
 	{
-		/* 240°-> blue ; 120°-> green ; 0°-> red */
-		my_hsv.h = 240.0;
-		my_hsv.s = 1.0;
-		my_hsv.v = 0.1;
-
-		/* clip hue if below 0 */
-		my_hsv.h = my_hsv.h < 0 ? 0 : my_hsv.h;
-
-		/* Convert color from HSV to RGB space */
-		my_rgb = hsv2rgb(my_hsv);
-
-		/* Store RGB color of first LED in the output buffer */
-		led_out[i * 3 + 0] 	= (uint8)(my_rgb.g * 255);
-		led_out[i * 3 + 1] 	= (uint8)(my_rgb.r * 255);
-		led_out[i * 3 + 2] 	= (uint8)(my_rgb.b * 255);
-
-		/* Shift each color one LED to the right */
-		for (i = 1; i < num_leds; i++)
+		/* Set color for each LED except the first one */
+		for (i = 0; i < num_leds; i++)
 		{
-			/* decrease hue depending on the change in volume */
-			my_hsv.h = (uint16)my_hsv.h - (uint16)(diff_abs_val * 0.2);
+			if ( i == 0 )
+			{
+				/* The first LED is always set to blue */
+				my_hsv.h = 240.0;
+			}
+			else
+			{
+				/* decrease hue depending on the change in volume */
+				my_hsv.h = (uint16)my_hsv.h - (uint16)(diff_abs_val * 0.005 * (count + 1));
+			}
+
 
 			/* clip hue if below 0 */
 			my_hsv.h = my_hsv.h < 0 ? 0 : my_hsv.h;
@@ -149,23 +150,23 @@ void some_timerfunc(void *arg)
 	//		os_printf("\r\nhue: %d", (int)my_hsv.h);
 	#endif
 
-
-		/* Save adc_value */
-		prev_adc_value = adc_value;
-
-
-	#if 1
+	#if 0
 	//	os_printf("\r\nsystem_adc_read: %x", adc_value);
 	//	os_printf("\r\ndiff_abs_val: %x", diff_abs_val);
 	#endif
 
 		count++;
-		if( my_hsv.h > 360.0)
+
+		if ( count >= red_up_num_cycles )
 		{
+			/* Release the lock */
+			lock = false;
+
+			/* Reset count*/
 			count = 0;
 		}
 
-		lock = false;
+
 	}
 
 	return;
