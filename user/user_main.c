@@ -43,20 +43,30 @@ static volatile os_timer_t some_timer;
 
 static struct espconn *pUdpServer;
 
-void some_timerfunc(void *arg)
+
+/*
+ * An ADC measurement is made every time this timer triggers.
+ * The ADC input is connected to a:
+ * SparkFun MEMS Microphone Breakout - INMP401 (ADMP401)
+ * https://www.sparkfun.com/products/9868
+ *
+ * This callback also contains the logic that simulates an
+ * equalizer by changing the LED colors of a ws2812 LED strip
+ */
+void softwareTimerCallback(void *arg)
 {
     /* ====================================== */
 	/* ADC	                         	  	  */
 	/* ====================================== */
 
-    /* Current ADC value */
+    /* Current ADC value (volume level of the most recent ADC measurement)*/
 	uint16 adc_value;
 
-	/* Previous ADC value */
+	/* Previous ADC value (volume level of previous ADC capture)*/
 	static uint16 prev_adc_value;
 
 	/* The absolute value of the difference of the current and previous ADC values */
-	static uint16 abs_val_diff = 0;
+	uint16 abs_val_diff = 0;
 
 	/* Color in RGB space */
 	rgb my_rgb;
@@ -73,15 +83,20 @@ void some_timerfunc(void *arg)
 	/* Changes of volume below the threshold are ignored */
 	static int threshold = 20;
 
-	/* Controls the 'fading' effect */
+	/* Controls the gradual LED color change animation */
 	static bool lock = false;
 
 	/* Controls the heatmap of the LEDs */
 	static int heatmap = 0;
 
+	/* Buffer that stores the colors of each LED in the strip */
 	uint8_t led_out[num_leds * 3];
 
+	/* */
 	uint16 i;
+
+	const uint16 red_up_num_cycles = 25;
+	static bool count_up = true;
 
 	/* Init saturation and value for HSV color */
 	my_hsv.s = 1.0;
@@ -96,22 +111,28 @@ void some_timerfunc(void *arg)
 	/* Save adc_value */
 	prev_adc_value = adc_value;
 
-	/* Fading animation taking place? */
-	if ( lock == false )
+	/* Gradual color change animation taking place?
+	 * OR
+	 * Is the measured value larger than the last value
+	 * that triggered the animation?*/
+	if ( lock == false || abs_val_diff > heatmap )
 	{
-		heatmap = abs_val_diff;
 #if 0
 		os_printf("\r\nheatmap: %d", heatmap);
 #endif
 
-		if ( abs_val_diff < threshold)
-		{
-			/* The change of volume was too low, do nothing*/
-		}
-		else
+		/* Is the measured value larger than the threshold? */
+		if ( abs_val_diff >= threshold )
 		{
 			/* Trigger detected! Start animation! */
 			lock = true;
+
+			/* Save the value that triggered the animation */
+			heatmap = abs_val_diff;
+
+			/* Reset important variables used in the animation */
+			count_up = true;
+			count = 0;
 		}
 	}
 	else
@@ -120,31 +141,30 @@ void some_timerfunc(void *arg)
 	}
 
 
-	uint16 red_up_num_cycles = 25;
-	static bool count_up = true;
+	/************************************
+	 * GRADUAL LED COLOR CHANGE ANIMATION
+	 ************************************/
 
+	/* Enter only if an animation was triggered above */
 	if ( lock == true )
 	{
+		/* Are we 'heating up' or 'cooling down'? */
 		if ( count_up == true )
 		{
-			/* heat up */
-			count += 2;
+			/* Heat up (faster than cooling down) */
+			count += 3;
 
 			count_up = (count >= red_up_num_cycles) ? false : true ;
 		}
 		else
 		{
-			/* cool down */
+			/* Cool down */
 			count--;
 
-			if ( count == 1 )
+			if ( count <= 2 )
 			{
 				/* Stop gradual color change */
 				lock = false;
-
-				count_up = true;
-
-				count = 0;
 			}
 		}
 
@@ -565,7 +585,7 @@ void user_init()
 	os_timer_disarm((ETSTimer*)&some_timer);
 
 	//Setup timer
-	os_timer_setfn((ETSTimer*)&some_timer, (os_timer_func_t *) some_timerfunc, NULL);
+	os_timer_setfn((ETSTimer*)&some_timer, (os_timer_func_t *) softwareTimerCallback, NULL);
 
 	//Arm the timer
 	//&some_timer is the pointer
