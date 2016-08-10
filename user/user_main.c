@@ -1,9 +1,10 @@
 /* ===========================================================================
  * my-esp features
  * ===========================================================================
- * Uses the NEC Infrared Transmission Protocol to receive IR codes:
- * 	http://techdocs.altium.com/display/FPGA/NEC+Infrared+Transmission+Protocol
+ * - Uses the NEC Infrared Transmission Protocol to receive IR codes:
+ *     http://techdocs.altium.com/display/FPGA/NEC+Infrared+Transmission+Protocol
  *
+ * - Uses I2S to control the color of the LEDs in a ws2812_i2s strip.
  *
  *
  */
@@ -25,6 +26,50 @@
 #include "user_interface.h"
 #include "ws2812_i2s.h"
 
+/* ====================================== */
+/* UART                                   */
+/* ====================================== */
+
+#define DBG  uart1_sendStr_no_wait // mrv
+
+#define SYNC_PATTERN_SIZE		(3)
+
+static uint16_t sync_idx = 0;
+
+const char rx_sync_pattern[] = "mrv";
+
+static uint8_t uart_input_buff[256] = {};
+
+/* ====================================== */
+/* TCP/UDP CONNECTIONS                    */
+/* ====================================== */
+
+static struct espconn *pUdpServer;
+
+static struct espconn *pTcpConn;
+uint8 thingspeak_ip[4] = { 184, 106, 153, 149 };
+
+static void ICACHE_FLASH_ATTR
+tcpConnCb(void *arg);
+
+static void ICACHE_FLASH_ATTR
+tcpSentCb(void *arg);
+
+static void ICACHE_FLASH_ATTR
+tcpRecvCb(void *arg, char *pData, unsigned short len);
+
+static void ICACHE_FLASH_ATTR
+tcpReconnCb(void *arg, sint8 err);
+
+static void ICACHE_FLASH_ATTR
+tcpDisconnCb(void *arg);
+
+
+/* ====================================== */
+/* WIFI                         	  	  */
+/* ====================================== */
+
+struct station_config stconf;
 
 
 /* ====================================== */
@@ -41,8 +86,9 @@ static void user_procTask(os_event_t *events);
 
 static volatile os_timer_t some_timer;
 
-static struct espconn *pUdpServer;
+static volatile os_timer_t wifi_setup_timer;
 
+static volatile os_timer_t post_timer;
 
 /*
  * An ADC measurement is made every time this timer triggers.
@@ -58,6 +104,8 @@ void softwareTimerCallback(void *arg)
     /* ====================================== */
 	/* ADC	                         	  	  */
 	/* ====================================== */
+
+	uint16 i;
 
     /* Current ADC value (volume level of the most recent ADC measurement)*/
 	uint16 adc_value;
@@ -92,9 +140,6 @@ void softwareTimerCallback(void *arg)
 	/* Buffer that stores the colors of each LED in the strip */
 	uint8_t led_out[num_leds * 3];
 
-	/* */
-	uint16 i;
-
 	const uint16 red_up_num_cycles = 25;
 	static bool count_up = true;
 
@@ -102,7 +147,7 @@ void softwareTimerCallback(void *arg)
 	my_hsv.s = 1.0;
 	my_hsv.v = 0.1;
 
-	/* No, then Read ADC */
+	/* Read ADC */
 	adc_value = system_adc_read();
 
 	/* Calculate the absolute value of the previous and current ADC values */
@@ -182,12 +227,12 @@ void softwareTimerCallback(void *arg)
 			}
 			else
 			{
-				/* decrease hue depending on the change in volume */
+				/* Decrease hue depending on the change in volume */
 				my_hsv.h = (uint16)my_hsv.h - (uint16)(heatmap * 0.005 * count);
 			}
 
 
-			/* clip hue if below 0 */
+			/* Clip hue if below 0 */
 			my_hsv.h = my_hsv.h < 0 ? 0 : my_hsv.h;
 
 			/* Convert color from HSV to RGB space */
@@ -458,20 +503,317 @@ void gpioCallback(void *arg)
 }
 
 
+//*****************************************************************************
+//
+// Appends a float to a string
+// source: http://www.esp8266.com/viewtopic.php?f=6&t=2445
+//
+//*****************************************************************************
+
+void ICACHE_FLASH_ATTR printFloat(float val, char *buff)
+{
+	char smallBuff[16];
+	int val1 = (int) val;
+	unsigned int val2;
+	if (val < 0) {
+		val2 = (int) (-100.0 * val) % 100;
+	} else {
+		val2 = (int) (100.0 * val) % 100;
+	}
+	os_sprintf(smallBuff, "%i.%02u", val1, val2);
+	strcat(buff, smallBuff);
+} //- See more at: http://www.esp8266.com/viewtopic.php?f=6&t=2445#sthash.O8yVW828.dpuf
+
+
 /* ====================================== */
-/* SOFTWARE TIMER                         */
+/* TCP CONNECTION                    	  */
+/* ====================================== */
+
+
+const char apiKey[] = "MJEMBUXY1DVNMWMY";
+
+void startHttpRequestTimerCallback(void *arg)
+{
+	/* start TCP connection as client */
+	sint8 err = espconn_connect(pTcpConn);
+	if (err != 0)
+	{
+		os_printf("Error connecting to a TCP server: %d\n", err);
+	}
+}
+
+/* ====================================== */
+/* TCP SERVER CALLBACKS					  */
+/* ====================================== */
+
+static void ICACHE_FLASH_ATTR
+tcpConnCb(void *arg)
+{
+	int i;
+	os_printf("tcpConnCb\n");
+
+	struct espconn* pCon = (struct espconn *)arg;
+	espconn_regist_recvcb(pCon, tcpRecvCb);
+	espconn_regist_disconcb(pCon, tcpDisconnCb);
+	espconn_regist_sentcb(pCon, tcpSentCb);
+
+	/* source: http://www.arduinesp.com/thingspeak */
+	int res = 0;
+
+	/* initialize as empty strings */
+	uint8_t httpRequest[300] = "";
+	uint8_t postStr[300] = "";
+	uint8_t postStrLen[20] = "";
+
+	uint8_t * pch = uart_input_buff;
+
+	/* concatenate the message body (bottom part of the HTTP request) */
+	os_strcat(postStr, apiKey);
+
+	for ( i = 0 ; i < 8 ; i++ )
+	{
+		os_strcat(postStr, "&field");
+		os_sprintf(postStrLen, "%d=", i + 1);
+		os_strcat(postStr, postStrLen);
+
+		/* locate each sample inside UART input buff and append it to the post string */
+		/* samples are divided with "\n\r" substrings */
+		while ( *pch != 0x0a) // 0x0a -> \n
+		{
+			/* get length of post string */
+			uint16_t postStrLen = os_strlen(postStr);
+
+			/* append character (overwrites the terminating NULL char) */
+			postStr[ postStrLen ] = *pch;
+
+			/* move the terminating NULL char 1 cell to the right */
+			postStr[ postStrLen + 1 ] = 0;
+
+			/* point to next char in UART input buffer */
+			pch++;
+		}
+
+		/* point to the char that follow the "\n\r" divisor */
+		pch += 1;
+	}
+
+	os_strcat(postStr, "\r\n\r\n");
+
+	/* concatenate the request-line and headers (top part of the http request) */
+	os_strcat(httpRequest, "POST /update HTTP/1.1\n");
+	os_strcat(httpRequest, "Host: api.thingspeak.com\n");
+	os_strcat(httpRequest, "Connection: close\n");
+	os_strcat(httpRequest, "X-THINGSPEAKAPIKEY: ");
+	os_strcat(httpRequest, apiKey);
+	os_strcat(httpRequest, "\n");
+	os_strcat(httpRequest, "Content-Type: application/x-www-form-urlencoded\n");
+	os_strcat(httpRequest, "Content-Length: ");
+	os_sprintf(postStrLen, "%i", os_strlen(postStr));
+	os_strcat(httpRequest, postStrLen);
+	os_strcat(httpRequest, "\n\n");
+	os_strcat(httpRequest, postStr);
+
+	/* print the complete http request */
+	os_printf("%s\n", httpRequest);
+
+
+	/* send the http post request */
+	res = espconn_send(pCon, (uint8_t *)httpRequest, os_strlen(httpRequest));
+	if (res != 0)
+	{
+		os_printf("espconn_send: error %d\n", res);
+	}
+	else
+	{
+		os_printf("espconn_send: OK %d\n", res);
+	}
+}
+
+static void ICACHE_FLASH_ATTR
+tcpRecvCb(void *arg, char *pData, unsigned short len)
+{
+	int i;
+
+	os_printf("tcpRxCb\n");
+
+	for ( i = 0 ; i < len ; i++)
+	{
+		os_printf("%c", pData[i]);
+	}
+}
+
+static void ICACHE_FLASH_ATTR
+tcpReconnCb(void *arg, sint8 err)
+{
+	int i;
+
+	os_printf("tcpReconnCb\n");
+	os_printf("%i\n",err);
+}
+
+static void ICACHE_FLASH_ATTR
+tcpDisconnCb(void *arg)
+{
+	os_printf("tcpDisconnCb\n");
+}
+
+static void ICACHE_FLASH_ATTR
+tcpSentCb(void *arg)
+{
+	os_printf("tcpSentCb\n");
+}
+
+
+/* ====================================== */
+/* UART 								  */
+/* ====================================== */
+
+/*----------------------------------------------------------------------------*
+ *                                                                            *
+ *  Name        : CheckSyncPattern                                            *
+ *                                                                            *
+ *  Description : checks weather a desired sequence of characters is received *
+ *                by incrementing an index variable on each success. Whenever *
+ *                an incorrect character is detected the index variable is    *
+ *                reseted to 0. When the complete sequence has been matched   *
+ *                the index will equal the size of the sync pattern           *
+ *                                                                            *
+ *  Input       : byte_read   the next byte to be checked with the patter     *
+ *                                                                            *
+ *  Output      :                                                             *
+ *                                                                            *
+ *----------------------------------------------------------------------------*/
+
+static void CheckSyncPattern(uint8_t byte_read)
+{
+    /* does the incoming byte match the next letter in the pattern? */
+    if(byte_read == rx_sync_pattern[sync_idx])
+    {
+        /* yes, then increase sync_index */
+        sync_idx++;
+    }
+    else
+    {
+        /* no, but does it at least match the first letter in the pattern? */
+        if(byte_read == rx_sync_pattern[0])
+        {
+           /* yes, then the following check should be done with the second letter */
+            sync_idx = 1;
+        }
+        else
+        {
+            /* no, then the pattern check has to start over (with the first letter) */
+          sync_idx = 0;
+
+#ifdef USE_LP1
+          if( byte_read != 0x00 )
+          {
+            /* reset flag that indicates that the processor was woken up by the UART */
+            uartLp2Requested = false;
+          }
+#endif
+        }
+    }
+    return;
+}
+
+
+//Called from UART.
+void ICACHE_FLASH_ATTR charrx( uint8_t byte_read )
+{
+#if 0
+	uart_tx_one_char(1, byte_read);
+#endif
+
+	static uint16_t payload_len = 0;
+
+	/* did the sync pattern match already? */
+	if ( sync_idx < SYNC_PATTERN_SIZE )
+	{
+		/* no, so read the incoming byte and continue with the sync pattern check process */
+		CheckSyncPattern(byte_read);
+	}
+	/* yes, but was it thanks to the previous byte read? */
+	else if ( payload_len == 0 )
+	{
+		/* yes, therefore the incoming byte contains the payload length */
+		payload_len = byte_read;
+		os_printf("payload_len: %d\n\r",payload_len);
+
+		/* reset UART input buffer */
+		uart_input_buff[0] = 0;
+	}
+	/* no, then the byte is part of the cmd. Continue reading the cmd from FIFO */
+	else
+	{
+		/* store next byte */
+		uart_input_buff[os_strlen(uart_input_buff)] = byte_read; // read byte from FIFO
+
+		/* did we read all bytes already? */
+		if ( payload_len == os_strlen(uart_input_buff) )
+		{
+			/* yes, then the payload was received completely */
+
+			/* start an HTTP post request by starting a client TCP connection */
+			sint8 err = espconn_connect(pTcpConn);
+			if (err != 0)
+			{
+				os_printf("Error connecting to a TCP server: %d\n", err);
+			}
+
+			os_printf("String received:\n\r%s\n\r",uart_input_buff);
+
+			/* restart sync pattern check */
+			sync_idx = 0;
+
+			/* reset payload lenght */
+			payload_len = 0;
+		}
+	}
+}
+
+/* ====================================== */
+/* WIFI                         	  	  */
+/* ====================================== */
+
+void wifiSetupTimerCallback(void *arg)
+{
+	/* Do we have an IP already? */
+	int status = wifi_station_get_connect_status();
+	if( status != STATION_GOT_IP)
+	{
+		/* No, then connect to the WiFi station */
+		wifi_station_disconnect();
+
+		os_printf("Trying to connect to %s\n", stconf.ssid );
+
+		/* connect to a WiFi station */
+		wifi_station_connect();
+	}
+	else
+	{
+		/* yes, then disable the timer WiFi setup timer*/
+		os_timer_disarm(&wifi_setup_timer);
+
+		/* enable POST timer in periodic mode */
+		os_timer_disarm((ETSTimer*)&post_timer);
+		os_timer_setfn((ETSTimer*)&post_timer, (os_timer_func_t *) startHttpRequestTimerCallback, NULL);
+		os_timer_arm((ETSTimer*)&post_timer, 10000, 0); // thingspeak needs minimum 15 sec delay between updates
+	}
+}
+
+
+/* ====================================== */
+/* OS TASK							      */
 /* ====================================== */
 
 static void ICACHE_FLASH_ATTR
 user_procTask(os_event_t *events)
 {
     os_delay_us(10);
-}
+    os_printf("OS task\n");
 
-
-void ICACHE_FLASH_ATTR charrx( uint8_t c )
-{
-	//Called from UART.
+//    system_os_post(user_procTaskPrio, 0, 0 );
 }
 
 
@@ -517,6 +859,7 @@ void user_init()
 	/* ====================================== */
 
 	// Initialize UART0 and UART1
+	/* NOTE: UART1 and I2S share same GPIO. Cannot use simultaneously. */
 	uart_init( BIT_RATE_115200, BIT_RATE_115200 );
 
 //	uart0_sendStr( "\nUART0 - USED TO PROGRAM THE MODULE\n" );
@@ -537,14 +880,14 @@ void user_init()
     		                  {PWM_1_OUT_IO_MUX,PWM_1_OUT_IO_FUNC,PWM_1_OUT_IO_NUM},
     		              };
 
-	/*PIN FUNCTION INIT FOR PWM OUTPUT*/
+	/* PIN FUNCTION INIT FOR PWM OUTPUT */
 	pwm_init(pwm_period, pwm_duty, PWM_CHANNEL, io_info);
 
-	/* Set pwm_duty cycle */
+	/* set pwm_duty cycle */
 	pwm_set_duty (14185, 0);
 	pwm_set_duty (22222, 1); // todo: explain why 22222 is the highest possible value
 
-	/* Start PWM */
+	/* start PWM */
 	pwm_start(); // NOTE: PWM causes spikes in other GPIOs
 #endif
 
@@ -581,21 +924,24 @@ void user_init()
 	//Set GPIO0 low
 	gpio_output_set(0, RELAY_PIN, RELAY_PIN, 0);
 
-	//Disarm timer
+	/* disarm timer */
 	os_timer_disarm((ETSTimer*)&some_timer);
 
-	//Setup timer
+	/* set callback */
 	os_timer_setfn((ETSTimer*)&some_timer, (os_timer_func_t *) softwareTimerCallback, NULL);
 
-	//Arm the timer
-	//&some_timer is the pointer
-	//third parameter is the fire time in ms
-	//0 for once and 1 for repeating
+	/* arm the timer -> os_timer_arm(<pointer>, <period in ms>, <fire periodically>) */
 	os_timer_arm((ETSTimer*)&some_timer, 10, 1);
 
-	//Start os task
-	system_os_task(user_procTask, user_procTaskPrio, user_procTaskQueue,
-	user_procTaskQueueLen);
+	/* ====================================== */
+	/* OS TASK                                */
+	/* ====================================== */
+
+	/* setup OS task */
+//	system_os_task(user_procTask, user_procTaskPrio, user_procTaskQueue, user_procTaskQueueLen);
+
+	/* send a message to OS task (fire task) */
+//	system_os_post(user_procTaskPrio, 0, 0 );
 
 
 	/* ====================================== */
@@ -631,21 +977,22 @@ void user_init()
 	/* UDP SERVER                         	  */
 	/* ====================================== */
 
-	/* usage: echo "foo" | nc -w1 -u 192.168.1.187 7777 */
+	/* usage:	echo <data> | nc -wl -u <ip address> <port>
+	 * example: echo "foo" | nc -w1 -u 192.168.1.187 7777 */
 
 	/* allocate space for server */
 	pUdpServer = (struct espconn *) os_zalloc(sizeof(struct espconn));
 
-	/* reset allocated memory to 0 */
+	/* clear allocated memory */
 	ets_memset(pUdpServer, 0, sizeof(struct espconn));
 
-	/* create the UDP server */
+	/* create the server */
 	espconn_create(pUdpServer);
 
 	/* set the type of server */
 	pUdpServer->type = ESPCONN_UDP;
 
-	/**/
+	/* allocate memory for UDP settings */
 	pUdpServer->proto.udp = (esp_udp *) os_zalloc(sizeof(esp_udp));
 
 	/* set the port that the server will be listening to */
@@ -665,45 +1012,81 @@ void user_init()
 	/* WIFI                         	  	  */
 	/* ====================================== */
 
-	struct station_config stconf;
-
 	wifi_set_opmode(STATION_MODE);
 
 	wifi_station_get_config_default(&stconf);
 
-	os_strncpy((char*) stconf.ssid, "TP-LINK_2.4GHz_FC2E51", 32);
-	os_strncpy((char*) stconf.password, "tonytony", 64);
+//	os_strncpy((char*) stconf.ssid, "TP-LINK_2.4GHz_FC2E51", 32);
+//	os_strncpy((char*) stconf.password, "tonytony", 64);
 
-//	os_strncpy((char*) stconf.ssid, "WLAN-PUB", 32);
-//	os_strncpy((char*) stconf.password, "", 64);
+	os_strncpy((char*) stconf.ssid, "WLAN-PUB", 32);
+	os_strncpy((char*) stconf.password, "", 64);
 
 //	os_strncpy((char*) stconf.ssid, "MAD air", 32);
 //	os_strncpy((char*) stconf.password, "glioninlog", 64);
 
-
 	stconf.bssid_set = 0;
 	wifi_station_set_config(&stconf);
 
+//	/* ====================================== */
+//	/* WS2812 LED STRIP                	  	  */
+//	/* ====================================== */
+//
+//	/* NOTE: UART1 and I2S share same GPIO. Cannot use simultaneously. */
+//	ws2812_init();
+//
+//	/*						G		R		B			*/
+//	uint8_t ledout[] = 	{
+//							0xff,	0x00,	0x00, 		//4th
+////							0xff,	0x00,	0x00,		//3rd
+////							0x00,	0xff,	0x00,		//2nd
+////							0x00,	0x00,	0xff, 		//1st
+//						};
+//
+//#if 0
+//		os_printf("\r\nB R G: %x %x %x\r\n", ledout[0], ledout[1],ledout[2]);
+//#endif
+//
+//	ws2812_push( ledout, sizeof( ledout ) );
+
 	/* ====================================== */
-	/* WS2812 LED STRIP                	  	  */
+	/* TCP CONNECTION                    	  */
 	/* ====================================== */
 
-	ws2812_init();
+	/* allocate space for server */
+	pTcpConn = (struct espconn *) os_zalloc(sizeof(struct espconn));
 
-	/*						G		R		B			*/
-	uint8_t ledout[] = 	{
-							0xff,	0x00,	0x00, 		//4th
-//							0xff,	0x00,	0x00,		//3rd
-//							0x00,	0xff,	0x00,		//2nd
-//							0x00,	0x00,	0xff, 		//1st
-						};
+	/* clear allocated memory */
+	ets_memset(pTcpConn, 0, sizeof(struct espconn));
 
-#if 0
-		os_printf("\r\nB R G: %x %x %x\r\n", ledout[0], ledout[1],ledout[2]);
-#endif
+	/* set the type of connection */
+	pTcpConn->type = ESPCONN_TCP;
 
-	ws2812_push( ledout, sizeof( ledout ) );
+	/* set state to NONE */
+	pTcpConn->state = ESPCONN_NONE;
 
+	/* allocate memory for TCP settings */
+	pTcpConn->proto.tcp = (esp_tcp *) os_zalloc(sizeof(esp_tcp));
+
+	/* set the port that the connection will be listening to */
+	pTcpConn->proto.tcp->local_port = espconn_port();
+
+	/* set the remote port and IP address */
+	pTcpConn->proto.tcp->remote_port = 80;
+	os_memcpy(pTcpConn->proto.tcp->remote_ip, thingspeak_ip, sizeof(thingspeak_ip));
+
+	/* register callbacks */
+	espconn_regist_connectcb(pTcpConn, tcpConnCb);
+	espconn_regist_reconcb(pTcpConn, tcpReconnCb);
+
+	/* disarm timer */
+	os_timer_disarm((ETSTimer*)&wifi_setup_timer);
+
+	/* set callback */
+	os_timer_setfn((ETSTimer*)&wifi_setup_timer, (os_timer_func_t *) wifiSetupTimerCallback, NULL);
+
+	/* arm the timer -> os_timer_arm(<pointer>, <period in ms>, <fire periodically>) */
+	os_timer_arm((ETSTimer*)&wifi_setup_timer, 5000, 1);
 
 	return;
 
