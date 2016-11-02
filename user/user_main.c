@@ -47,7 +47,7 @@ static uint8_t uart_input_buff[256] = {};
 static struct espconn *pUdpServer;
 
 static struct espconn *pTcpConn;
-uint8 thingspeak_ip[4] = { 184, 106, 153, 149 };
+uint8 server_ip_address[4] = { 184, 106, 153, 149 };
 
 static void ICACHE_FLASH_ATTR
 tcpConnCb(void *arg);
@@ -776,7 +776,7 @@ void ICACHE_FLASH_ATTR charrx( uint8_t byte_read )
 /* WIFI                         	  	  */
 /* ====================================== */
 
-void wifiSetupTimerCallback(void *arg)
+void wifiConnectTimerCb(void *arg)
 {
 	/* Do we have an IP already? */
 	int status = wifi_station_get_connect_status();
@@ -896,13 +896,13 @@ void user_init()
 	/* GPIO INTERRPUT                         */
 	/* ====================================== */
 
-	/* Set GPIO12 as GPIO */
+	/* Set GPIO12 in GPIO mode */
 	PIN_FUNC_SELECT( PERIPHS_IO_MUX_MTDI_U, FUNC_GPIO12 );
 
 	/* Set GPIO12 as input */
 	GPIO_DIS_OUTPUT( GPIO_ID_PIN(12) );
 
-	/* Disable all IO interrupts */
+	/* Disable all GPIO interrupts */
 	ETS_GPIO_INTR_DISABLE();
 
 	/* Set a GPIO callback function */
@@ -1073,7 +1073,7 @@ void user_init()
 
 	/* set the remote port and IP address */
 	pTcpConn->proto.tcp->remote_port = 80;
-	os_memcpy(pTcpConn->proto.tcp->remote_ip, thingspeak_ip, sizeof(thingspeak_ip));
+	os_memcpy(pTcpConn->proto.tcp->remote_ip, server_ip_address, sizeof(server_ip_address));
 
 	/* register callbacks */
 	espconn_regist_connectcb(pTcpConn, tcpConnCb);
@@ -1083,7 +1083,7 @@ void user_init()
 	os_timer_disarm((ETSTimer*)&wifi_setup_timer);
 
 	/* set callback */
-	os_timer_setfn((ETSTimer*)&wifi_setup_timer, (os_timer_func_t *) wifiSetupTimerCallback, NULL);
+	os_timer_setfn((ETSTimer*)&wifi_setup_timer, (os_timer_func_t *) wifiConnectTimerCb, NULL);
 
 	/* arm the timer -> os_timer_arm(<pointer>, <period in ms>, <fire periodically>) */
 	os_timer_arm((ETSTimer*)&wifi_setup_timer, 5000, 1);
